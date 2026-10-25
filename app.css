@@ -14,7 +14,8 @@
   --tabs-h: 64px;
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* ダブルタップで拡大しない（ボタンを続けて押すことが多いため） */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
 body { font-family: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; font-size: 17px; line-height: 1.5; overscroll-behavior: none; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
