@@ -6,7 +6,7 @@
    データはこのiPhoneの中（localStorage）だけに保存する。運動の記録は「いつ・何を・何回」の履歴で残し、
    あとでログインを付けたときにそのままサーバーへ移せるようにしておく */
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const KEY = 'kinmon-v1';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -85,6 +85,7 @@ function defaults() {
     items: {}, equip: { bg: '', fx: '', title: '', skin: '' }, seen: { egg: t }, pulls: 0,
     tmenu: 'basic',
     settings: { voice: true, tenSec: true, beep: true, silentOk: true, rate: 'normal', remind: '21:00' },
+    push: { on: false, sent: '' }, // sent＝通知サーバーに「やった」を伝えた最後の日
   };
 }
 let S;
@@ -94,7 +95,7 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      S = { ...base, ...d, settings: { ...base.settings, ...d.settings }, equip: { ...base.equip, ...d.equip } };
+      S = { ...base, ...d, settings: { ...base.settings, ...d.settings }, equip: { ...base.equip, ...d.equip }, push: { ...base.push, ...d.push } };
       if (!Array.isArray(S.mons) || !S.mons.length) S.mons = base.mons;
       if (!S.mons[S.active]) S.active = 0;
       return;
@@ -232,6 +233,55 @@ function pull() {
   else { S.items[it.id] = dayKey(); res.isNew = true; res.note = '「図鑑」のコレクションで付けられます'; }
   save();
   return res;
+}
+
+/* ---------- リマインド通知（通知サーバーとのやりとり） ----------
+   送るのは ランダムな番号（S.uid）・通知の宛先・知らせる時刻・時差・最後にやった日 だけ */
+const PUSH_URL = 'https://kinmon-push.kinmon-push.workers.dev';
+const VAPID_PUBLIC = 'BF2tvSpLtl9zHFW7PqjiPlBmvDRvuzgFbptTM9TdlFjBmZGMSBE4BznJLdDw3p6KBkunEdazc0kBe9l697EZUuk';
+const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const tzMin = () => -new Date().getTimezoneOffset();
+const pushReady = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+function lastDoneDay() {
+  const tot = dayTotals();
+  return Object.keys(tot).filter((k) => isDoneIn(tot, k)).sort().pop() || '';
+}
+async function pushPost(path, body) {
+  const r = await fetch(PUSH_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: S.uid, ...body }) });
+  if (!r.ok) throw new Error(`push ${path} ${r.status}`);
+  return r.json();
+}
+async function pushOn() {
+  if (!pushReady()) {
+    toast(standalone() ? 'このiPhoneでは通知が使えません（iOS 16.4以降が必要）' : 'ホーム画面に追加した筋モンから開いて、もう一度押してください');
+    return;
+  }
+  try {
+    if ((await Notification.requestPermission()) !== 'granted') { toast('通知が許可されませんでした（iPhoneの設定→通知→筋モン で変えられます）'); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(VAPID_PUBLIC) }));
+    await pushPost('/subscribe', { sub: sub.toJSON(), remind: S.settings.remind, tz: tzMin(), lastDone: lastDoneDay() });
+    S.push.on = true; S.push.sent = lastDoneDay(); save();
+    toast(`毎日${S.settings.remind}に、まだなら知らせます`);
+  } catch { toast('通知の準備に失敗しました。電波のよいところでもう一度'); }
+  keepScroll(render);
+}
+async function pushOff() {
+  try {
+    await pushPost('/unsubscribe', {});
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    await sub?.unsubscribe();
+  } catch { /* サーバーに届かなくても、こちらは止める */ }
+  S.push.on = false; save();
+  toast('通知を止めました');
+  keepScroll(render);
+}
+// 「今日やった」を通知サーバーに伝える（今日の通知を止めるため）
+async function pushDone() {
+  const d = dayKey();
+  if (!S.push.on || S.push.sent === d || !isDoneIn(dayTotals(), d)) return;
+  try { await pushPost('/done', { d }); S.push.sent = d; save(); } catch { /* 次に開いたときにまた送る */ }
 }
 
 /* ---------- 相棒のセリフ ---------- */
@@ -674,9 +724,13 @@ function settingsHTML() {
     <header class="e-head"><button type="button" class="txtbtn" data-act="tab" data-v="home"><span class="ic">${IC.back}</span>もどる</button><h1>設定</h1><span></span></header>
     <h2 class="sec-title">リマインド</h2>
     <div class="rows card">
+      ${S.push.on
+        ? `<button type="button" class="row" data-act="pushOff"><span class="r-main"><b>🔔 通知オン</b><small>その日まだなら、この時刻と2時間後に知らせます。押すと止めます</small></span><span class="ic chev">${IC.chev}</span></button>`
+        : `<button type="button" class="row" data-act="pushOn"><span class="r-main"><b>通知を受け取る</b><small>${standalone() ? '押すと「通知を許可」の確認が出ます' : 'iPhoneでは、ホーム画面に追加した筋モンから開いて押してください'}</small></span><span class="ic chev">${IC.chev}</span></button>`}
       <label class="row"><span class="r-main"><b>知らせる時刻</b><small>相棒が「やってないぞ」と知らせます</small></span><input type="time" id="remind" value="${esc(st.remind)}"></label>
-      <div class="row"><span class="r-main"><small>※ 通知は、通知サーバーができたら届くようになります（準備中）</small></span></div>
+      ${S.push.on ? `<button type="button" class="row" data-act="pushTest"><span class="r-main"><b>テスト通知を送る</b><small>数秒で届けば準備OK</small></span><span class="ic chev">${IC.chev}</span></button>` : ''}
     </div>
+    <p class="hint">通知のために、ランダムな番号・通知の宛先・時刻・最後にやった日だけを通知サーバーに送ります。回数やモンスターのデータは送りません。</p>
     <h2 class="sec-title">タイマーの音と声</h2>
     <div class="rows card">
       ${tg('voice', '声の案内', '「腕立て、スタート」「休憩。つぎは〜」')}
@@ -823,6 +877,12 @@ const ACT = {
     draft = {}; draftFromTimer = '';
     render();
     showResult(r);
+    pushDone();
+  },
+  pushOn: () => pushOn(),
+  pushOff: () => pushOff(),
+  async pushTest() {
+    try { await pushPost('/test', {}); toast('送りました。数秒で届きます'); } catch { toast('送れませんでした。通知をいったん止めて、もう一度オンにしてください'); }
   },
   toTimer() { resetTimer(); go('timer'); },
   play: () => (T.state === 'run' ? pauseTimer() : startTimer()),
@@ -881,7 +941,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.set) { S.settings[t.dataset.set] = t.checked; save(); if (t.dataset.set === 'silentOk') unlockAudio(); }
-  if (t.id === 'remind') { S.settings.remind = t.value || '21:00'; save(); toast('時刻を保存しました'); }
+  if (t.id === 'remind') {
+    S.settings.remind = t.value || '21:00'; save();
+    if (!S.push.on) { toast('時刻を保存しました'); return; }
+    try { await pushPost('/settings', { remind: S.settings.remind, tz: tzMin() }); toast(`毎日${S.settings.remind}に知らせます`); } catch { toast('通知サーバーに届きませんでした。もう一度変えてください'); }
+  }
   if (t.id === 'restore' && t.files[0]) {
     try {
       const d = JSON.parse(await t.files[0].text());
@@ -898,6 +962,7 @@ document.addEventListener('visibilitychange', () => {
   if (T.state === 'run') { keepAwake(true); tick(); }
   // 日付が変わっていたら、元気やセリフを今日の状態にする
   else if (['home', 'log', 'gacha'].includes(view)) { grantFreeze(); keepScroll(render); }
+  pushDone();
 });
 // 声の一覧はあとから届くことがある
 try { if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {}; } catch { /* なし */ }
@@ -907,6 +972,7 @@ load();
 grantFreeze();
 resetTimer();
 render();
+pushDone();
 try { navigator.storage?.persist?.(); } catch { /* なし */ }
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
