@@ -1,6 +1,6 @@
 /* オフラインでも開けるようにする（ジムで電波が弱いとき用）。
    まずネットから最新を取りに行き、3秒で取れなければ保存しておいた版を使う */
-const CACHE = 'kinmon-20261025223423';
+const CACHE = 'kinmon-20261026053916';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'mon.js', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
